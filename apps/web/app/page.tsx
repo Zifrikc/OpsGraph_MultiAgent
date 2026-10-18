@@ -17,6 +17,7 @@ import {
   ExternalLink,
   GitBranch,
   Layers3,
+  LogOut,
   Maximize2,
   Network,
   Play,
@@ -32,6 +33,11 @@ import {
 } from "lucide-react";
 import Topology from "@/components/Topology";
 import { useOpsGraph } from "@/lib/useOpsGraph";
+import { useSession } from "@/lib/useSession";
+import LoginScreen from "@/components/LoginScreen";
+import AssistantPanel from "@/components/AssistantPanel";
+import MetricsPanel from "@/components/MetricsPanel";
+import GraphExplorer from "@/components/GraphExplorer";
 import { DemoEvent, Phase, Scenario, scenarioLabels } from "@/lib/demo";
 const PosScene = dynamic(() => import("@/components/PosScene"), {
   ssr: false,
@@ -63,11 +69,12 @@ const products = [
   },
 ];
 export default function Home() {
-  const [view, setView] = useState<"overview" | "checkout" | "events">(
-    "overview",
-  );
+  const [view, setView] = useState<
+    "overview" | "graph" | "checkout" | "events" | "assistant"
+  >("overview");
   const [scenario, setScenario] = useState<Scenario>("timeout");
-  const backend = useOpsGraph();
+  const auth = useSession();
+  const backend = useOpsGraph(Boolean(auth.user));
   const phase: Phase = backend.sending
     ? "processing"
     : backend.state.phase === "error"
@@ -83,6 +90,7 @@ export default function Home() {
   const [focus, setFocus] = useState(false);
   const [query, setQuery] = useState("");
   const [product, setProduct] = useState(0);
+  const [storeId, setStoreId] = useState("store-centro");
   const [run, setRun] = useState(0);
   const [step, setStep] = useState(0);
   const [payload, setPayload] = useState<DemoEvent | null>(null);
@@ -90,12 +98,18 @@ export default function Home() {
   const [confirm, setConfirm] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [notice, setNotice] = useState("");
+  const [resultDialog, setResultDialog] = useState<null | {
+    kind: "success" | "incident" | "resolved" | "error";
+    title: string;
+    message: string;
+  }>(null);
   const incident = phase === "incident";
   const svc = services.find((s) => s.id === selected) || services[0];
   useEffect(() => {
     if (backend.state.product !== undefined) setProduct(backend.state.product);
     if (backend.state.scenario) setScenario(backend.state.scenario);
-  }, [backend.state.product, backend.state.scenario]);
+    if (backend.state.storeId) setStoreId(backend.state.storeId);
+  }, [backend.state.product, backend.state.scenario, backend.state.storeId]);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(""), 5000);
@@ -122,10 +136,57 @@ export default function Home() {
     }
   }, [phase, events.length, backend.state.paymentId]);
   async function pay() {
-    if (phase === "processing" || !backend.connected) return;
+    if (
+      phase === "processing" ||
+      !backend.connected ||
+      auth.user?.role === "viewer"
+    )
+      return;
     setRun((r) => r + 1);
     setConfirm(false);
-    await backend.pay(scenario, product);
+    const result = await backend.pay(scenario, product, storeId);
+    if (result?.phase === "approved")
+      setResultDialog({
+        kind: "success",
+        title: "Pago procesado con éxito",
+        message:
+          "La autorización, la persistencia y la notificación ficticias quedaron registradas.",
+      });
+    else if (result?.phase === "incident")
+      setResultDialog({
+        kind: "incident",
+        title: "Pago no completado",
+        message:
+          "Se detectó un timeout. La investigación encontró relaciones, evidencia y un runbook para revisar.",
+      });
+    else if (!result)
+      setResultDialog({
+        kind: "error",
+        title: "No se pudo procesar",
+        message:
+          "La operación falló o la conexión se interrumpió. Revisa el estado en observabilidad.",
+      });
+  }
+  async function runMassIncident() {
+    if (!backend.connected || backend.sending || auth.user?.role !== "admin")
+      return;
+    backend.reset();
+    setRun((value) => value + 1);
+    const result = await backend.batch();
+    if (result?.phase === "incident") {
+      setResultDialog({
+        kind: "incident",
+        title: "30 stores affected",
+        message:
+          "Thirty simulated stores sent payment failures through the shared bank connector. Triage and investigator agents examined the representative incident; every store event is in FalkorDB.",
+      });
+      setView("graph");
+    } else
+      setResultDialog({
+        kind: "error",
+        title: "Mass scenario failed",
+        message: "Review the event log and backend connection before retrying.",
+      });
   }
   function reset() {
     if (phase === "processing") {
@@ -142,9 +203,23 @@ export default function Home() {
     );
   }
   async function mitigate() {
-    await backend.recover();
+    const result = await backend.recover();
     setConfirm(false);
     setFocus(false);
+    if (result?.phase === "resolved")
+      setResultDialog({
+        kind: "resolved",
+        title: "Incidente resuelto con éxito",
+        message:
+          "El servicio se marcó como recuperado y la acción quedó registrada. El pago fallido no se volvió a cobrar.",
+      });
+    else
+      setResultDialog({
+        kind: "error",
+        title: "La recuperación no se completó",
+        message:
+          "El incidente sigue abierto o apareció otro error. Revisa los eventos antes de reintentar.",
+      });
   }
   function download() {
     const blob = new Blob(
@@ -174,6 +249,12 @@ export default function Home() {
       {id === "events" && events.length > 0 && <small>{events.length}</small>}
     </button>
   );
+  if (auth.loading)
+    return <div className="login-loading">Preparando acceso seguro…</div>;
+  if (!auth.user)
+    return (
+      <LoginScreen onLogin={auth.login} busy={auth.busy} error={auth.error} />
+    );
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -201,9 +282,12 @@ export default function Home() {
         </div>
         <div className="nav-caption">WORKSPACE</div>
         <nav aria-label="Navegación principal">
-          {nav("overview", "Observabilidad", <Network size={18} />)}
-          {nav("checkout", "Payment studio", <CreditCard size={18} />)}
-          {nav("events", "Explorador de eventos", <Terminal size={18} />)}
+          {nav("overview", "Observability", <Network size={18} />)}
+          {nav("graph", "Graph Explorer", <GitBranch size={18} />)}
+          {nav("checkout", "Payment Studio", <CreditCard size={18} />)}
+          {nav("events", "Event Log", <Terminal size={18} />)}
+          {auth.user.role === "admin" &&
+            nav("assistant", "Agent Console", <Sparkles size={18} />)}
         </nav>
         <div className="sidebar-divider" />
         <div className="nav-caption">ENTORNO</div>
@@ -212,7 +296,8 @@ export default function Home() {
           Demo local <span className="tiny-tag">MOCK</span>
         </div>
         <div className="environment">
-          <GitBranch size={14} />8 servicios simulados
+          <GitBranch size={14} />8 services · {backend.graph.stores.length}{" "}
+          stores
         </div>
         <div className="sidebar-bottom">
           <div className="demo-callout">
@@ -235,7 +320,8 @@ export default function Home() {
           <div className="profile">
             <span className="avatar">OG</span>
             <div>
-              Demo operator<small>Entorno de demostración</small>
+              {auth.user.name}
+              <small>Rol {auth.user.role}</small>
             </div>
             <span className="dot mint-dot" />
           </div>
@@ -247,10 +333,14 @@ export default function Home() {
             Workspace <ChevronRight size={14} />
             <span>
               {view === "overview"
-                ? "Observabilidad"
-                : view === "checkout"
-                  ? "Payment studio"
-                  : "Eventos"}
+                ? "Observability"
+                : view === "graph"
+                  ? "Graph Explorer"
+                  : view === "checkout"
+                    ? "Payment Studio"
+                    : view === "assistant"
+                      ? "Agent Console"
+                      : "Event Log"}
             </span>
           </div>
           <div className="topbar-actions">
@@ -261,7 +351,17 @@ export default function Home() {
                 : "Backend desconectado"}
             </span>
             <span className="topbar-divider" />
-            <span className="avatar small">OG</span>
+            <span className="avatar small">
+              {auth.user.name.slice(0, 2).toUpperCase()}
+            </span>
+            <button
+              className="plain-button"
+              onClick={() => void auth.logout()}
+              title="Cerrar sesión"
+              aria-label="Cerrar sesión"
+            >
+              <LogOut size={17} />
+            </button>
           </div>
         </header>
         <div className="page-content">
@@ -282,23 +382,35 @@ export default function Home() {
               <div className="eyebrow">
                 {view === "checkout"
                   ? "PAYMENT PLAYGROUND"
-                  : view === "events"
-                    ? "EVENT STREAM"
-                    : "CONNECTED OPERATIONS"}
+                  : view === "graph"
+                    ? "LIVE GRAPH EXPLORER"
+                    : view === "events"
+                      ? "EVENT STREAM"
+                      : view === "assistant"
+                        ? "GRAPH-GROUNDED ASSISTANT"
+                        : "CONNECTED OPERATIONS"}
               </div>
               <h1>
                 {view === "overview"
-                  ? "Cada servicio cuenta una historia."
-                  : view === "checkout"
-                    ? "Una compra que conecta todo."
-                    : "Del clic a la evidencia."}
+                  ? "Every service tells a story."
+                  : view === "graph"
+                    ? "Explore every connection."
+                    : view === "checkout"
+                      ? "One payment. A connected system."
+                      : view === "assistant"
+                        ? "Ask with evidence."
+                        : "From click to evidence."}
               </h1>
               <p>
                 {view === "overview"
                   ? "Sigue las dependencias. Entiende el impacto. Decide con contexto."
-                  : view === "checkout"
-                    ? "Inicia un pago de prueba y observa su recorrido en tiempo real."
-                    : "Eventos generados en este navegador, listos para inspeccionar y compartir."}
+                  : view === "graph"
+                    ? "Tiendas, servicios y rutas de impacto con datos consultados desde FalkorDB."
+                    : view === "checkout"
+                      ? "Inicia un pago de prueba y observa su recorrido en tiempo real."
+                      : view === "assistant"
+                        ? "Consulta incidentes y runbooks. Cada respuesta indica sus fuentes y el modelo utilizado."
+                        : "Eventos generados en este navegador, listos para inspeccionar y compartir."}
               </p>
             </div>
             <div className="heading-actions">
@@ -312,6 +424,7 @@ export default function Home() {
               </button>
               <button
                 className="button primary"
+                disabled={auth.user.role === "viewer" && view !== "checkout"}
                 onClick={() =>
                   view === "checkout"
                     ? setView("overview")
@@ -329,6 +442,18 @@ export default function Home() {
           </div>
           {view === "overview" && (
             <>
+              {phase === "resolved" && (
+                <div className="outcome-banner resolved" role="status">
+                  <CheckCircle2 size={20} />
+                  <div>
+                    <strong>Recuperación validada</strong>
+                    <span>
+                      El incidente está resuelto; consulta los eventos para
+                      revisar la acción. El pago anterior sigue fallido.
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="stats-grid">
                 <Stat
                   label="Servicios monitoreados"
@@ -349,7 +474,12 @@ export default function Home() {
                 />
                 <Stat
                   label="Incidentes abiertos"
-                  value={incident ? "01" : "00"}
+                  value={String(
+                    backend.metrics?.stores.reduce(
+                      (total, store) => total + store.active,
+                      0,
+                    ) || 0,
+                  ).padStart(2, "0")}
                   note={
                     phase === "resolved"
                       ? "Incidente resuelto en la demo"
@@ -369,6 +499,11 @@ export default function Home() {
                   icon={<Zap size={18} />}
                 />
               </div>
+              <MetricsPanel
+                metrics={backend.metrics}
+                selectedStore={storeId}
+                onStoreSelect={setStoreId}
+              />
               <div
                 className={`observability-layout ${expanded ? "map-expanded" : ""}`}
               >
@@ -376,8 +511,10 @@ export default function Home() {
                   <div className="panel-heading">
                     <div>
                       <Network size={17} />
-                      <h2>Mapa de servicios</h2>
-                      <span className="tag">8 nodos</span>
+                      <h2>Service Map</h2>
+                      <span className="tag">
+                        8 services · {backend.graph.stores.length} stores
+                      </span>
                     </div>
                     <div>
                       <label className="focus-toggle">
@@ -408,7 +545,10 @@ export default function Home() {
                       {incident ? "Incidente activo" : "Sistema saludable"}
                     </span>
                     <span>
-                      commerce-demo <ChevronRight size={12} /> dependencies
+                      {backend.graph.stores.find(
+                        (store) => store.id === storeId,
+                      )?.label || "Tienda Centro"}{" "}
+                      <ChevronRight size={12} /> dependencias
                     </span>
                   </div>
                   <Topology
@@ -421,6 +561,8 @@ export default function Home() {
                       setTab("details");
                     }}
                     focus={focus}
+                    storeId={storeId}
+                    onStoreSelect={setStoreId}
                   />
                   <div className="graph-footer">
                     <div>
@@ -515,7 +657,7 @@ export default function Home() {
                             </span>
                             <code>INC-{analysis?.id.slice(0, 8)}</code>
                           </div>
-                          <h2>El banco no responde</h2>
+                          <h2>Bank connector timeout</h2>
                           <p>
                             La autorización superó el tiempo de espera
                             configurado.
@@ -590,11 +732,13 @@ export default function Home() {
                             </p>
                             <button
                               className="button primary"
-                              disabled={!incident}
+                              disabled={!incident || auth.user.role !== "admin"}
                               onClick={() => setConfirm(true)}
                             >
                               {incident
-                                ? "Revisar acción simulada"
+                                ? auth.user.role === "admin"
+                                  ? "Validate with agent and recover"
+                                  : "Solo admin puede aprobar"
                                 : "Recuperación completada"}
                               <ArrowRight size={14} />
                             </button>
@@ -624,7 +768,7 @@ export default function Home() {
                 <div className="panel-heading">
                   <div>
                     <Activity size={17} />
-                    <h2>Actividad reciente</h2>
+                    <h2>Recent Activity</h2>
                     <span className="tag">Esta sesión</span>
                   </div>
                   <button
@@ -682,6 +826,18 @@ export default function Home() {
               </section>
             </>
           )}
+          {view === "graph" && (
+            <GraphExplorer
+              graph={backend.graph}
+              selected={selected}
+              onSelect={setSelected}
+              storeId={storeId}
+              onStoreSelect={setStoreId}
+              affected={affected}
+              incident={incident}
+              metrics={backend.metrics}
+            />
+          )}
           {view === "checkout" && (
             <>
               <div className="studio-layout">
@@ -689,7 +845,11 @@ export default function Home() {
                   <div className="panel-heading">
                     <div>
                       <ShoppingBag size={17} />
-                      <h2>La tienda de prueba</h2>
+                      <h2>
+                        {backend.graph.stores.find(
+                          (store) => store.id === storeId,
+                        )?.label || "Tienda Centro"}
+                      </h2>
                     </div>
                     <span className="tag">SANDBOX</span>
                   </div>
@@ -748,7 +908,7 @@ export default function Home() {
                   <div className="panel-heading">
                     <div>
                       <Box size={17} />
-                      <h2>Terminal interactivo</h2>
+                      <h2>Interactive POS</h2>
                     </div>
                     <span className="tag">
                       <span className="dot mint-dot" /> 3D ASSET
@@ -763,6 +923,24 @@ export default function Home() {
                   </div>
                   <div className="payment-control">
                     <div className="scenario-label">
+                      <label htmlFor="store-select">
+                        Tienda que origina el pago
+                      </label>
+                      <span>Comparten la misma plataforma</span>
+                    </div>
+                    <select
+                      id="store-select"
+                      value={storeId}
+                      disabled={phase === "processing" || incident}
+                      onChange={(event) => setStoreId(event.target.value)}
+                    >
+                      {backend.graph.stores.map((store) => (
+                        <option value={store.id} key={store.id}>
+                          {store.label} · {store.region}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="scenario-label">
                       <label htmlFor="scenario">Escenario de la demo</label>
                       <span>Solo simulación</span>
                     </div>
@@ -770,7 +948,10 @@ export default function Home() {
                       id="scenario"
                       value={scenario}
                       disabled={
-                        phase === "processing" || incident || !backend.connected
+                        phase === "processing" ||
+                        incident ||
+                        !backend.connected ||
+                        auth.user.role === "viewer"
                       }
                       onChange={(e) => setScenario(e.target.value as Scenario)}
                     >
@@ -783,7 +964,10 @@ export default function Home() {
                     <button
                       className="button pay-button"
                       disabled={
-                        phase === "processing" || incident || !backend.connected
+                        phase === "processing" ||
+                        incident ||
+                        !backend.connected ||
+                        auth.user.role === "viewer"
                       }
                       onClick={pay}
                     >
@@ -805,6 +989,16 @@ export default function Home() {
                         </>
                       )}
                     </button>
+                    {auth.user.role === "admin" && (
+                      <button
+                        className="button secondary mass-button"
+                        disabled={!backend.connected || backend.sending}
+                        onClick={runMassIncident}
+                      >
+                        <TriangleAlert size={17} /> Simulate failures in 30
+                        stores
+                      </button>
+                    )}
                     <p className="payment-disclaimer">
                       <ShieldCheck size={13} /> Sin cobros reales. Sin datos
                       bancarios. Persistencia en FalkorDB.
@@ -816,7 +1010,7 @@ export default function Home() {
                 <div className="panel-heading">
                   <div>
                     <GitBranch size={17} />
-                    <h2>El recorrido de tu pago</h2>
+                    <h2>Payment Journey</h2>
                   </div>
                   <span
                     className={`badge ${incident ? "danger" : phase === "approved" || phase === "resolved" ? "mint" : ""}`}
@@ -930,7 +1124,7 @@ export default function Home() {
               <div className="panel-heading">
                 <div>
                   <Terminal size={17} />
-                  <h2>Registro de eventos</h2>
+                  <h2>Event Log</h2>
                   <span className="tag">{events.length}</span>
                 </div>
                 <button
@@ -1037,6 +1231,23 @@ export default function Home() {
               </div>
             </section>
           )}
+          {view === "assistant" && auth.user.role === "admin" && (
+            <AssistantPanel
+              result={backend.chat}
+              busy={backend.chatLoading}
+              error={backend.chatError}
+              onAsk={backend.ask}
+              onLoad={backend.loadChat}
+              modelChoice={backend.modelChoice}
+              onModelChoice={backend.setModelChoice}
+              modelStatus={backend.modelStatus}
+              onLoadModelStatus={backend.loadModelStatus}
+              onOpenInvestigation={() => {
+                setView("overview");
+                setTab("investigation");
+              }}
+            />
+          )}
           <footer className="page-footer">
             <span>
               <span className="brand-mini">✳</span> OPSGRAPH AI{" "}
@@ -1058,6 +1269,71 @@ export default function Home() {
           </button>
         </div>
       )}
+      {resultDialog && (
+        <Modal title={resultDialog.title} onClose={() => setResultDialog(null)}>
+          <div className={`result-modal-icon ${resultDialog.kind}`}>
+            {resultDialog.kind === "incident" ||
+            resultDialog.kind === "error" ? (
+              <TriangleAlert size={30} />
+            ) : (
+              <CheckCircle2 size={30} />
+            )}
+          </div>
+          <p>{resultDialog.message}</p>
+          {resultDialog.kind === "incident" && analysis && (
+            <div className="inspector-note">
+              Incidente {analysis.id.slice(0, 8)} · {analysis.steps.length}{" "}
+              consultas de agentes · {analysis.provider_status}
+            </div>
+          )}
+          <div className="modal-actions">
+            <button
+              className="button secondary"
+              onClick={() => setResultDialog(null)}
+            >
+              Cerrar
+            </button>
+            {(resultDialog.kind === "incident" ||
+              resultDialog.kind === "error") && (
+              <>
+                <button
+                  className="button primary"
+                  onClick={() => {
+                    setResultDialog(null);
+                    setView("overview");
+                    setTab("investigation");
+                  }}
+                >
+                  Open Observability <ArrowRight size={16} />
+                </button>
+                {auth.user.role === "admin" && (
+                  <button
+                    className="button secondary"
+                    onClick={() => {
+                      setResultDialog(null);
+                      setView("assistant");
+                    }}
+                  >
+                    Ask the Agent <Sparkles size={16} />
+                  </button>
+                )}
+              </>
+            )}
+            {(resultDialog.kind === "success" ||
+              resultDialog.kind === "resolved") && (
+              <button
+                className="button primary"
+                onClick={() => {
+                  setResultDialog(null);
+                  setView("overview");
+                }}
+              >
+                Ver observabilidad <ArrowRight size={16} />
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
       {payload && (
         <Modal title="Payload del evento" onClose={() => setPayload(null)}>
           <span className="badge">SIMULADO · JSON</span>
@@ -1076,8 +1352,8 @@ export default function Home() {
             <ShieldCheck size={28} />
           </div>
           <p>
-            RB-007 cambiará el estado del conector a saludable dentro de esta
-            demo. La aprobación y la recuperación se guardarán en FalkorDB.
+            The recovery agent will check RB-007 through MCP before changing
+            incident states. Validation and recovery are recorded in FalkorDB.
           </p>
           <div className="inspector-note">
             No ejecuta cambios reales ni reintenta el pago fallido. La acción

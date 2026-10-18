@@ -26,17 +26,52 @@ export type Incident = {
   evidence: Record<string, Evidence>;
   steps: { agent: string; tool: string; mode: string; result: Evidence }[];
 };
-type Snapshot = {
+export type Snapshot = {
   phase: Phase | "error";
   events: DemoEvent[];
   paymentId?: string;
   scenario?: Scenario;
   product?: number;
+  storeId?: string;
   incident: Incident | null;
 };
 export type Graph = {
   services: typeof initialServices;
   edges: { source: string; target: string; type: string }[];
+  stores: { id: string; label: string; region: string }[];
+};
+export type Metrics = {
+  stores: {
+    id: string;
+    label: string;
+    total: number;
+    approved: number;
+    incidents: number;
+    active: number;
+  }[];
+  services: { id: string; label: string; events: number; errors: number }[];
+  total: number;
+  approved: number;
+  incidents: number;
+  scope: string;
+};
+export type ChatResult = {
+  answer: string;
+  evidence_refs: string[];
+  uncertainties: string[];
+  provider_status: string;
+  model: string;
+  history: { question: string; answer: string }[];
+};
+export type ModelChoice = {
+  provider: "default" | "ollama" | "google" | "anthropic" | "openai";
+  model: string;
+  api_key: string;
+};
+export type ModelStatus = {
+  provider: string;
+  model: string;
+  local_model_available: boolean;
 };
 async function request<T>(path: string, body?: unknown): Promise<T> {
   const result = await fetch("/api/backend/" + path, {
@@ -46,6 +81,8 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     cache: "no-store",
   });
   if (!result.ok) {
+    if (result.status === 401 && typeof window !== "undefined")
+      window.dispatchEvent(new Event("opsgraph-auth-expired"));
     const data = await result.json().catch(() => ({}));
     throw new Error(
       typeof data.detail === "string" ? data.detail : `Error ${result.status}`,
@@ -53,7 +90,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   }
   return result.json();
 }
-export function useOpsGraph() {
+export function useOpsGraph(enabled = true) {
   const [state, setState] = useState<Snapshot>({
     phase: "idle",
     events: [],
@@ -62,7 +99,18 @@ export function useOpsGraph() {
   const [graph, setGraph] = useState<Graph>({
     services: initialServices,
     edges: [],
+    stores: [],
   });
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [chat, setChat] = useState<ChatResult | null>(null);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [modelChoice, setModelChoice] = useState<ModelChoice>({
+    provider: "default",
+    model: "",
+    api_key: "",
+  });
+  const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const session = useRef("");
@@ -83,6 +131,7 @@ export function useOpsGraph() {
     }
   }, []);
   useEffect(() => {
+    if (!enabled) return;
     session.current =
       localStorage.getItem("opsgraph-session") || crypto.randomUUID();
     localStorage.setItem("opsgraph-session", session.current);
@@ -99,6 +148,8 @@ export function useOpsGraph() {
           );
         if (active) setGraph(topology);
         if (active) await refresh();
+        const nextMetrics = await request<Metrics>("metrics");
+        if (active) setMetrics(nextMetrics);
       } catch (e) {
         if (active) {
           setConnected(false);
@@ -114,8 +165,8 @@ export function useOpsGraph() {
       active = false;
       clearInterval(interval);
     };
-  }, [refresh]);
-  async function pay(scenario: Scenario, product: number) {
+  }, [refresh, enabled]);
+  async function pay(scenario: Scenario, product: number, storeId: string) {
     if (submitting.current) return;
     submitting.current = true;
     setSending(true);
@@ -127,11 +178,36 @@ export function useOpsGraph() {
         session_id: id,
         scenario,
         product,
+        store_id: storeId,
+        model_choice: modelChoice,
       });
       if (session.current === id) setState(result);
+      return result;
     } catch (e) {
       setError((e as Error).message);
       await refresh();
+      return null;
+    } finally {
+      submitting.current = false;
+      setSending(false);
+    }
+  }
+  async function batch() {
+    if (submitting.current) return null;
+    submitting.current = true;
+    setSending(true);
+    setError("");
+    try {
+      const result = await request<Snapshot>("mock-payments/batch", {
+        session_id: session.current,
+        model_choice: modelChoice,
+      });
+      setState(result);
+      return result;
+    } catch (e) {
+      setError((e as Error).message);
+      await refresh();
+      return null;
     } finally {
       submitting.current = false;
       setSending(false);
@@ -140,15 +216,55 @@ export function useOpsGraph() {
   async function recover() {
     if (!state.incident) return;
     try {
-      setState(
-        await request<Snapshot>(`incidents/${state.incident.id}/actions`, {
+      const result = await request<Snapshot>(
+        `incidents/${state.incident.id}/actions`,
+        {
           session_id: session.current,
           action: "simulate_recovery",
-        }),
+        },
       );
+      setState(result);
       setError("");
+      return result;
     } catch (e) {
       setError((e as Error).message);
+      return null;
+    }
+  }
+  async function ask(question: string) {
+    setChatLoading(true);
+    setChatError("");
+    try {
+      const result = await request<ChatResult>("chat", {
+        session_id: session.current,
+        question,
+        model_choice: modelChoice,
+      });
+      setChat(result);
+      return result;
+    } catch (e) {
+      setChatError((e as Error).message);
+      return null;
+    } finally {
+      setChatLoading(false);
+    }
+  }
+  async function loadModelStatus() {
+    try {
+      setModelStatus(await request<ModelStatus>("model/status"));
+    } catch {
+      setModelStatus(null);
+    }
+  }
+  async function loadChat() {
+    if (!session.current) return;
+    try {
+      const result = await request<ChatResult>(
+        `chat/history/${session.current}`,
+      );
+      setChat(result);
+    } catch (e) {
+      setChatError((e as Error).message);
     }
   }
   function reset() {
@@ -157,6 +273,27 @@ export function useOpsGraph() {
     localStorage.setItem("opsgraph-session", session.current);
     setState({ phase: "idle", events: [], incident: null });
     setError("");
+    setChat(null);
   }
-  return { state, graph, connected, error, pay, recover, reset, sending };
+  return {
+    state,
+    graph,
+    metrics,
+    connected,
+    error,
+    pay,
+    batch,
+    recover,
+    reset,
+    sending,
+    chat,
+    chatLoading,
+    chatError,
+    ask,
+    loadChat,
+    modelChoice,
+    setModelChoice,
+    modelStatus,
+    loadModelStatus,
+  };
 }

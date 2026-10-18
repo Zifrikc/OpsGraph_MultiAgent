@@ -3,7 +3,7 @@ services:
   falkordb:
     image: falkordb/falkordb:v4.12.0
     environment:
-      REDIS_PASSWORD: ${FALKORDB_PASSWORD:?Run scripts/setup.ps1 first}
+      REDIS_PASSWORD: ${FALKORDB_PASSWORD:?Run a setup script first}
       REDISCLI_AUTH: ${FALKORDB_PASSWORD}
     entrypoint: ["sh", "-c"]
     command: ["exec redis-server --loadmodule /var/lib/falkordb/bin/falkordb.so --requirepass \"$$REDIS_PASSWORD\" --appendonly no --save 60 1 --dir /data"]
@@ -30,7 +30,7 @@ services:
     build: ./apps/web
     environment:
       API_BASE_URL: http://api:8000
-      API_TOKEN: ${API_TOKEN:?Run scripts/setup.ps1 first}
+      API_TOKEN: ${API_TOKEN:?Run a setup script first}
       APP_ORIGIN: http://localhost:${WEB_PORT:-3000}
       PORT: 3000
     ports: ["127.0.0.1:${WEB_PORT:-3000}:3000"]

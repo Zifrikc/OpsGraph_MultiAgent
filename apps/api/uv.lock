@@ -584,6 +584,7 @@ dependencies = [
     { name = "mcp" },
     { name = "ollama" },
     { name = "pydantic-settings" },
+    { name = "pyjwt" },
     { name = "uvicorn" },
 ]
 
@@ -602,6 +603,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.9,<2" },
     { name = "ollama", specifier = ">=0.5,<1" },
     { name = "pydantic-settings", specifier = ">=2.8,<3" },
+    { name = "pyjwt", specifier = ">=2.9,<3" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
 

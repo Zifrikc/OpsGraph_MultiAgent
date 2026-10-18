@@ -1,7 +1,9 @@
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
+
 from falkordb import FalkorDB
+
 from app.core.config import get_settings
 
 SERVICES = [
@@ -15,10 +17,16 @@ SERVICES = [
     ("notification-service", "Notifications", "Mensajería", "Platform", 340, 490, 21),
 ]
 EDGES = [(0, 1), (0, 2), (2, 3), (3, 4), (3, 5), (3, 6)]
+STORES = [
+    ("store-centro", "Tienda Centro", "Lima"),
+    ("store-norte", "Tienda Norte", "Trujillo"),
+    ("store-sur", "Tienda Sur", "Arequipa"),
+]
+STORES += [(f"store-{i:02d}", f"Store {i:02d}", "Peru · demo") for i in range(4, 31)]
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class GraphRepository:
@@ -41,7 +49,7 @@ class GraphRepository:
 
     def seed(self):
         existing = self.query("CALL db.indexes() YIELD label, properties RETURN label, properties")
-        for label in ["Service", "Payment", "Incident", "Event", "AgentStep"]:
+        for label in ["Service", "Store", "Payment", "Incident", "Event", "AgentStep"]:
             if not any(row[0] == label and "id" in row[1] for row in existing):
                 self.query(f"CREATE INDEX FOR (n:{label}) ON (n.id)")
         for id_, label, kind, owner, x, y, latency in SERVICES:
@@ -49,12 +57,26 @@ class GraphRepository:
                 "MERGE (s:Service {id:$id}) SET s.label=$label, s.kind=$kind, "
                 "s.x=$x, s.y=$y, s.latency=$latency, s.owner=$owner "
                 "MERGE (t:Team {name:$owner}) MERGE (s)-[:OWNED_BY]->(t)",
-                dict(id=id_, label=label, kind=kind, owner=owner, x=x, y=y, latency=latency),
+                {
+                    "id": id_,
+                    "label": label,
+                    "kind": kind,
+                    "owner": owner,
+                    "x": x,
+                    "y": y,
+                    "latency": latency,
+                },
             )
         for a, b in EDGES:
             self.query(
                 "MATCH (a:Service {id:$a}), (b:Service {id:$b}) MERGE (a)-[:DEPENDS_ON]->(b)",
                 {"a": SERVICES[a][0], "b": SERVICES[b][0]},
+            )
+        for store_id, label, region in STORES:
+            self.query(
+                "MERGE (t:Store {id:$id}) SET t.label=$label,t.region=$region "
+                "WITH t MATCH (s:Service {id:'api-gateway'}) MERGE (t)-[:USES]->(s)",
+                {"id": store_id, "label": label, "region": region},
             )
         self.query(
             "MATCH (a:Service {id:'order-service'}),(b:Service {id:'notification-service'}) "
@@ -68,8 +90,35 @@ class GraphRepository:
             "SET h.summary='Timeout bancario previo; proveedor alternativo simulado' "
             "MERGE (h)-[:AFFECTED]->(s)"
         )
+        chunks = [
+            (
+                "RB-007:1",
+                "Timeout bancario",
+                "Un timeout del bank-connector deja el pago sin aprobar. Revisar dependencias y tasa de fallos antes de proponer recuperación.",
+            ),
+            (
+                "RB-007:2",
+                "Recuperación simulada",
+                "El operador puede aprobar un cambio simulado a proveedor alternativo. El pago anterior no se reintenta ni se marca como aprobado.",
+            ),
+            (
+                "RB-007:3",
+                "Evidencia",
+                "Un despliegue reciente está correlacionado temporalmente, pero no demuestra por sí solo que causó el timeout.",
+            ),
+        ]
+        for chunk_id, title, text in chunks:
+            self.query(
+                "MATCH (r:Runbook {id:'RB-007'}) "
+                "MERGE (c:RunbookChunk {id:$id}) SET c.title=$title,c.text=$text "
+                "MERGE (r)-[:HAS_CHUNK]->(c)",
+                {"id": chunk_id, "title": title, "text": text},
+            )
 
     def topology(self):
+        stores = self.query(
+            "MATCH (t:Store) RETURN t.id,t.label,t.region ORDER BY t.id", readonly=True
+        )
         nodes = self.query(
             "MATCH (s:Service) RETURN s.id,s.label,s.kind,s.owner,s.x,s.y,s.latency ORDER BY s.id",
             readonly=True,
@@ -78,29 +127,119 @@ class GraphRepository:
             "MATCH (a:Service)-[r]->(b:Service) RETURN a.id,b.id,type(r)", readonly=True
         )
         return {
+            "stores": [dict(zip(["id", "label", "region"], r)) for r in stores],
             "services": [
                 dict(zip(["id", "label", "kind", "owner", "x", "y", "latency"], r)) for r in nodes
             ],
             "edges": [{"source": r[0], "target": r[1], "type": r[2]} for r in edges],
         }
 
+    def metrics(self):
+        payments = self.query(
+            "MATCH (p:Payment) RETURN p.store,p.phase,p.created ORDER BY p.created DESC LIMIT 1000",
+            readonly=True,
+        )
+        events = self.query(
+            "MATCH (e:Event) RETURN e.payload ORDER BY e.timestamp DESC LIMIT 1000",
+            readonly=True,
+        )
+        stores = {
+            store_id: {
+                "id": store_id,
+                "label": label,
+                "total": 0,
+                "approved": 0,
+                "incidents": 0,
+                "active": 0,
+            }
+            for store_id, label, _ in STORES
+        }
+        for store_id, phase, _ in payments:
+            item = stores.get(store_id or "store-centro")
+            if item:
+                item["total"] += 1
+                item["approved"] += phase == "approved"
+                item["incidents"] += phase in {"incident", "resolved", "error"}
+                item["active"] += phase == "incident"
+        services = {
+            row[0]: {"id": row[0], "label": row[1], "events": 0, "errors": 0}
+            for row in self.query("MATCH (s:Service) RETURN s.id,s.label", readonly=True)
+        }
+        for (payload,) in events:
+            event = json.loads(payload)
+            item = services.get(event.get("service"))
+            if item:
+                item["events"] += 1
+                item["errors"] += event["type"] in {"bank.timeout", "workflow.failed"}
+        return {
+            "stores": list(stores.values()),
+            "services": list(services.values()),
+            "total": len(payments),
+            "approved": sum(p[1] == "approved" for p in payments),
+            "incidents": sum(p[1] in {"incident", "resolved", "error"} for p in payments),
+            "scope": "Últimos 1.000 pagos y 1.000 eventos ficticios",
+        }
+
+    def runbook_chunks(self, question):
+        rows = self.query("MATCH (c:RunbookChunk) RETURN c.id,c.title,c.text", readonly=True)
+        terms = {word.strip(".,:;?¿¡!").casefold() for word in question.split() if len(word) > 3}
+        scored = sorted(
+            rows,
+            key=lambda row: sum(term in (row[1] + " " + row[2]).casefold() for term in terms),
+            reverse=True,
+        )
+        return [{"ref": "runbook:" + row[0], "title": row[1], "text": row[2]} for row in scored[:3]]
+
+    def chat_history(self, session):
+        rows = self.query(
+            "MATCH (t:ChatTurn {session:$session}) RETURN t.question,t.answer,t.refs,t.provider,t.created "
+            "ORDER BY t.created DESC LIMIT 6",
+            {"session": session},
+            readonly=True,
+        )
+        return [
+            {"question": row[0], "answer": row[1], "refs": json.loads(row[2]), "provider": row[3]}
+            for row in reversed(rows)
+        ]
+
+    def save_chat(self, session, question, answer, refs, provider):
+        self.query(
+            "CREATE (t:ChatTurn {id:$id,session:$session,question:$question,answer:$answer,"
+            "refs:$refs,provider:$provider,created:$created})",
+            {
+                "id": str(uuid4()),
+                "session": session,
+                "question": question,
+                "answer": answer,
+                "refs": json.dumps(refs),
+                "provider": provider,
+                "created": now(),
+            },
+        )
+
     def claim(self, request):
         claim = str(uuid4())
         rows = self.query(
             "MERGE (p:Payment {id:$id}) ON CREATE SET p.session=$session, "
-            "p.claim=$claim,p.scenario=$scenario,p.product=$product,p.created=$created, "
-            "p.phase='processing' RETURN p.claim,p.session,p.scenario,p.product",
+            "p.claim=$claim,p.scenario=$scenario,p.product=$product,p.store=$store,p.created=$created, "
+            "p.phase='processing' RETURN p.claim,p.session,p.scenario,p.product,p.store",
             {
                 "id": str(request.id),
                 "session": str(request.session_id),
                 "claim": claim,
                 "scenario": request.scenario,
                 "product": request.product,
+                "store": request.store_id,
                 "created": now(),
             },
         )
         row = rows[0]
-        if row[1:] != [str(request.session_id), request.scenario, request.product]:
+        if row[1:] != [
+            str(request.session_id),
+            request.scenario,
+            request.product,
+            request.store_id,
+        ]:
             raise ValueError("Idempotency key already used for a different request")
         return row[0] == claim
 
@@ -110,13 +249,17 @@ class GraphRepository:
         )
 
     def event(self, payment_id, type_, service, data=None):
+        stores = self.query(
+            "MATCH (p:Payment {id:$id}) RETURN p.store", {"id": payment_id}, readonly=True
+        )
+        store_id = stores[0][0] if stores else "store-centro"
         e = {
             "id": str(uuid4()),
             "timestamp": now(),
             "type": type_,
             "service": service,
             "traceId": payment_id,
-            "data": {"simulated": True, **(data or {})},
+            "data": {"simulated": True, "storeId": store_id, **(data or {})},
         }
         self.query(
             "MATCH (p:Payment {id:$payment}) CREATE (e:Event {id:$id, payload:$payload, "
@@ -175,7 +318,7 @@ class GraphRepository:
 
     def snapshot(self, session):
         payments = self.query(
-            "MATCH (p:Payment {session:$session}) RETURN p.id,p.phase,p.scenario,p.product "
+            "MATCH (p:Payment {session:$session}) RETURN p.id,p.phase,p.scenario,p.product,p.store "
             "ORDER BY p.created DESC LIMIT 1",
             {"session": session},
             True,
@@ -193,8 +336,14 @@ class GraphRepository:
         }
         if not payments:
             return result
-        id_, phase, scenario, product = payments[0]
-        result.update(paymentId=id_, phase=phase, scenario=scenario, product=product)
+        id_, phase, scenario, product, store_id = payments[0]
+        result.update(
+            paymentId=id_,
+            phase=phase,
+            scenario=scenario,
+            product=product,
+            storeId=store_id or "store-centro",
+        )
         incident = self.query(
             "MATCH (i:Incident {id:$id}) RETURN i.status,i.evidence,i.summary,i.provider_status",
             {"id": id_},
@@ -231,3 +380,16 @@ class GraphRepository:
             self.event(id_, "runbook.approved", "operator", {"runbook": "RB-007"})
             self.event(id_, "incident.resolved", "payment-service", {"paymentRetried": False})
         return bool(rows)
+
+    def recover_batch(self, session):
+        rows = self.query(
+            "MATCH (p:Payment {session:$session})-[:CAUSED]->(i:Incident) "
+            "WHERE i.status='open' SET i.status='resolved',p.phase='resolved' RETURN p.id",
+            {"session": session},
+        )
+        for (payment_id,) in rows:
+            self.event(payment_id, "runbook.approved", "operator", {"runbook": "RB-007"})
+            self.event(
+                payment_id, "incident.resolved", "payment-service", {"paymentRetried": False}
+            )
+        return len(rows)

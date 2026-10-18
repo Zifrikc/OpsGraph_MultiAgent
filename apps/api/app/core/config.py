@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
-from pydantic import SecretStr, Field
+
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,10 @@ class Settings(BaseSettings):
     falkordb_ssl: bool = False
     falkordb_graph: str = Field(default="opsgraph_dev", pattern=r"^opsgraph_[a-z0-9_]+$")
     api_token: SecretStr
+    auth_secret: SecretStr
+    admin_password: SecretStr
+    operator_password: SecretStr
+    viewer_password: SecretStr
     model_provider: Literal["none", "ollama", "google"] = "none"
     model_name: str = "qwen3.8:27b"
     ollama_base_url: str = "http://localhost:11434"

@@ -8,7 +8,7 @@ import app.infrastructure.models as gateway_module
 
 def test_model_disabled(monkeypatch):
     monkeypatch.setattr(
-        gateway_module, "get_settings", lambda: SimpleNamespace(model_provider="none")
+        gateway_module, "get_settings", lambda: SimpleNamespace(model_provider="none", model_name="fixture")
     )
     value, status = asyncio.run(ModelGateway().generate("", {}, ToolPlan))
     assert value is None and status == "deterministic"

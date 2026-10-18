@@ -1,0 +1,13 @@
+# Build and publish only. Deployment is a separate, explicit step.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -t, '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/opsgraph-api:${_TAG}', apps/api]
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -t, '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/opsgraph-web:${_TAG}', apps/web]
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/opsgraph-api:${_TAG}'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/opsgraph-web:${_TAG}'
+substitutions:
+  _REGION: us-central1
+  _REPOSITORY: opsgraph
+  _TAG: manual

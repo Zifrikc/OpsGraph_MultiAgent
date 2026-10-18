@@ -3,7 +3,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "OpsGraph AI · Operations, connected",
   description:
-    "Demo local de pagos y respuesta a incidentes. Sin transacciones reales.",
+    "Connected payment operations and graph-based incident response demo. No real transactions.",
 };
 export default function RootLayout({
   children,

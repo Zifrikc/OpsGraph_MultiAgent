@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 const routes =
-  /^(topology|state\/[0-9a-f-]{36}|mock-payments|incidents\/[0-9a-f-]{36}\/actions)$/;
+  /^(topology|metrics|model\/status|chat|chat\/history\/[0-9a-f-]{36}|state\/[0-9a-f-]{36}|mock-payments|mock-payments\/batch|incidents\/[0-9a-f-]{36}\/actions)$/;
 async function proxy(
   request: NextRequest,
   context: { params: Promise<{ path: string[] }> },
@@ -24,6 +24,12 @@ async function proxy(
       { detail: "Backend sin configurar. Inicia Docker Compose." },
       { status: 503 },
     );
+  const session = request.cookies.get("opsgraph_session")?.value;
+  if (!session)
+    return Response.json(
+      { detail: "Inicia sesión para continuar" },
+      { status: 401 },
+    );
   const body = request.method === "POST" ? await request.text() : undefined;
   if (body && body.length > 4096)
     return Response.json({ detail: "Request too large" }, { status: 413 });
@@ -33,6 +39,7 @@ async function proxy(
       headers: {
         "Content-Type": "application/json",
         "X-Opsgraph-Token": process.env.API_TOKEN,
+        Authorization: `Bearer ${session}`,
       },
       body,
       cache: "no-store",

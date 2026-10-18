@@ -19,6 +19,12 @@ def client():
     with TestClient(
         app, headers={"X-Opsgraph-Token": get_settings().api_token.get_secret_value()}
     ) as c:
+        login = c.post(
+            "/auth/login",
+            json={"username": "admin", "password": get_settings().admin_password.get_secret_value()},
+        )
+        assert login.status_code == 200
+        c.headers["Authorization"] = "Bearer " + login.json()["token"]
         yield c
     GraphRepository().graph.delete()
     get_settings.cache_clear()
@@ -28,6 +34,7 @@ def test_auth_and_topology(client):
     assert client.get("/api/v1/topology", headers={"X-Opsgraph-Token": "wrong"}).status_code == 401
     topology = client.get("/api/v1/topology").json()
     assert len(topology["services"]) == 8
+    assert len(topology["stores"]) == 30
     assert len(topology["edges"]) == 7
     GraphRepository().seed()
     assert len(client.get("/api/v1/topology").json()["services"]) == 8
@@ -75,8 +82,8 @@ def test_payment_workflow(client, scenario):
         again = client.post(
             f"/api/v1/incidents/{pid}/actions",
             json={"session_id": session, "action": "simulate_recovery"},
-        ).json()
-        assert len(again["events"]) == len(resolved["events"])
+        )
+        assert again.status_code == 409
 
 
 def test_no_arbitrary_fields(client):

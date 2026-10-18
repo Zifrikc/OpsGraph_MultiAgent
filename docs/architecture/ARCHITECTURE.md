@@ -1,14 +1,14 @@
-> Documento de diseño/fase anterior. Para el estado ejecutable actual, consultar [Arquitectura V1](../architecture/IMPLEMENTED_V1.md) y [guía local](../operations/FALKORDB_LOCAL.md).
+> **Diseño histórico, no árbol actual del repositorio.** La estructura implementada está en [IMPLEMENTED_V3.md](IMPLEMENTED_V3.md), el modelo real en [GRAPH_DATA_MODEL.md](GRAPH_DATA_MODEL.md) y el arranque en [README.md](../../README.md). El árbol y las herramientas de abajo son propuestas anteriores; no debe inferirse que cada archivo existe.
 
 # Arquitectura y jerarquía del proyecto
 
-Este archivo es la referencia de estructura del repositorio. El diseño está pensado para OpsGraph AI y para un equipo pequeño; no se debe crear cada carpeta el primer día. Implementar por fases y agregar módulos cuando exista código real.
+Este archivo conserva decisiones y una jerarquía propuesta para OpsGraph AI. El repositorio implementó una variante más pequeña bajo `apps/api/` y `apps/web/`, adecuada para dos desarrolladores principales.
 
 ## Decisiones
 
-### Implementación frontend actual
+### Estado al redactar este diseño histórico
 
-Existe un prototipo ejecutable en `apps/web/` con Next.js, TypeScript y Three.js. Implementa exclusivamente interfaz y eventos en memoria. Consulta [FRONTEND_PROTOTYPE.md](../demo/FRONTEND_PROTOTYPE.md) para la estructura real y el arranque. El backend, MCP, grafo y agentes descritos abajo siguen siendo diseño propuesto, pendiente de validación del equipo.
+En esta fase sólo existía el prototipo frontend. Posteriormente se implementaron FastAPI, FalkorDB, MCP y la coordinación de agentes. Consulte `IMPLEMENTED_V3.md` para el estado vigente.
 
 - **Producto:** monolito modular. Next.js presenta Checkout y War Room; FastAPI es dueño de la lógica, los eventos y los límites de acceso a FalkorDB y al proveedor de modelos.
 - **Agentes de producto:** Triage Agent e Investigator Agent son dos especialistas identificables, coordinados por un orquestador; comparten el modelo y corren en secuencia.
@@ -85,7 +85,7 @@ GrahpAgentHackathon/
 └── Models/                            # assets fuente; validar licencia/tamaño antes de integrar
 ```
 
-Los Markdown ya están organizados en `docs/` por producto, arquitectura, demo y operación; sólo README y CLAUDE.md quedan en raíz. La implementación propuesta (`backend/`, `frontend/`, `.claude/`, Compose y CI) aún no existe. El árbol muestra lugares previstos, no trabajo obligatorio inmediato. No crear `infra/pipelines`, hooks, skills ni microservicios vacíos por cumplir una lista.
+El árbol anterior es una propuesta, no una lista de archivos presentes. La implementación usa `apps/api/`, `apps/web/`, `compose.yaml` y `.github/workflows/ci.yml`. No se crearon carpetas vacías, hooks ni skills de Claude Code sólo para cumplir una plantilla.
 
 ## Convenciones de Claude Code
 

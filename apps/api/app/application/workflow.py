@@ -2,10 +2,13 @@ import asyncio
 import json
 import os
 import sys
+from uuid import uuid4
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from app.domain.models import ToolPlan, Summary
-from app.infrastructure.graph import GraphRepository
+
+from app.domain.models import PaymentRequest, Summary, ToolPlan
+from app.infrastructure.graph import STORES, GraphRepository
 from app.infrastructure.models import ModelGateway
 
 
@@ -14,13 +17,18 @@ class PaymentWorkflow:
         self.repo = repo or GraphRepository()
         self.model = ModelGateway()
 
-    async def run(self, request):
+    async def run(self, request, allow_existing=False):
+        self.model = ModelGateway(request.model_choice)
         r = self.repo
         pid = str(request.id)
         if len(r.topology()["services"]) != 8:
             raise RuntimeError("Graph seed unavailable; restart API to initialize")
         current = r.snapshot(str(request.session_id))
-        if current["phase"] in {"incident", "processing"} and current.get("paymentId") != pid:
+        if (
+            not allow_existing
+            and current["phase"] in {"incident", "processing"}
+            and current.get("paymentId") != pid
+        ):
             raise ValueError("Resolve the current incident or start a new session")
         if not r.claim(request):
             return r.snapshot(str(request.session_id))
@@ -68,6 +76,70 @@ class PaymentWorkflow:
             )
             raise
         return r.snapshot(str(request.session_id))
+
+    async def batch(self, request):
+        session = str(request.session_id)
+        if self.repo.snapshot(session)["phase"] != "idle":
+            raise ValueError("Start a new session before the 30-store scenario")
+        for store_id, _, _ in STORES[:-1]:
+            payment = PaymentRequest(
+                id=uuid4(),
+                session_id=request.session_id,
+                scenario="timeout",
+                store_id=store_id,
+                model_choice=request.model_choice,
+            )
+            pid = str(payment.id)
+            self.repo.claim(payment)
+            self.repo.event(pid, "checkout.submitted", "api-gateway", {"batch": True})
+            self.repo.event(pid, "payment.requested", "payment-service", {"batch": True})
+            self.repo.event(
+                pid, "bank.timeout", "bank-connector", {"batch": True, "timeoutMs": 5000}
+            )
+            self.repo.open_incident(pid, "timeout")
+            self.repo.finish(
+                pid,
+                {"batch": True},
+                {
+                    "summary": "Shared bank connector timeout in a simulated 30-store batch.",
+                    "evidence_refs": ["runbook:RB-007:1"],
+                    "uncertainties": ["Demo fixture; no external bank was contacted."],
+                },
+                "batch_shared_investigation",
+            )
+            self.repo.event(pid, "incident.opened", "payment-service", {"batch": True})
+        representative = PaymentRequest(
+            id=uuid4(),
+            session_id=request.session_id,
+            scenario="timeout",
+            store_id=STORES[-1][0],
+            model_choice=request.model_choice,
+        )
+        return await self.run(representative, allow_existing=True)
+
+    async def validate_recovery(self, pid):
+        server = StdioServerParameters(
+            command=sys.executable, args=["-m", "app.presentation.mcp.server"], env=dict(os.environ)
+        )
+        async with stdio_client(server) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "find_applicable_runbooks", {"service_id": "bank-connector"}
+                )
+                if result.isError:
+                    raise ValueError("Agent validation failed; no recovery was applied")
+                data = result.structuredContent
+                if data is None:
+                    data = json.loads(next(c.text for c in result.content if c.type == "text"))
+                if not any(item.get("id") == "RB-007" for item in data.get("runbooks", [])):
+                    raise ValueError("Agent did not validate RB-007; no recovery was applied")
+                self.repo.step(
+                    pid, "recovery-agent", "find_applicable_runbooks", data, "mcp_validation"
+                )
+                self.repo.event(
+                    pid, "agent.recovery.validated", "recovery-agent", {"runbook": "RB-007"}
+                )
 
     async def investigate(self, pid, scenario):
         evidence = {}

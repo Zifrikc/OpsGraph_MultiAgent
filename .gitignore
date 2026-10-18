@@ -4,6 +4,8 @@ out/
 *.tsbuildinfo
 .env*
 !.env.example
+!.env.cloudrun.*.example
+!.env.deploy.*.example
 .venv/
 __pycache__/
 .pytest_cache/

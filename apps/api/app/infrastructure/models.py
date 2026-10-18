@@ -1,16 +1,48 @@
 import asyncio
 import json
 import logging
+import urllib.error
+import urllib.request
+
 from app.core.config import get_settings
+from app.domain.models import ModelChoice
 
 
 class ModelGateway:
-    def __init__(self):
+    def __init__(self, choice: ModelChoice | None = None):
         self.failure = None
+        self.choice = choice or ModelChoice()
+
+    def selected(self):
+        settings = get_settings()
+        provider = (
+            settings.model_provider if self.choice.provider == "default" else self.choice.provider
+        )
+        model = self.choice.model or (
+            settings.model_name
+            if provider == settings.model_provider
+            else {
+                "google": "gemini-3.8-flash",
+                "anthropic": "claude-sonnet-5-5",
+                "openai": "gpt-4.1-mini",
+                "ollama": settings.model_name,
+            }.get(provider, settings.model_name)
+        )
+        return provider, model
+
+    def _remote_json(self, url, headers, body, timeout):
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", **headers},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.load(response)
 
     async def generate(self, instruction, evidence, schema):
         s = get_settings()
-        if s.model_provider == "none":
+        provider, model = self.selected()
+        if provider == "none":
             return None, "deterministic"
         if self.failure:
             return None, "prior_failure:" + self.failure
@@ -21,12 +53,12 @@ class ModelGateway:
         )
         try:
             async with asyncio.timeout(s.model_timeout_seconds):
-                if s.model_provider == "ollama":
+                if provider == "ollama":
                     from ollama import AsyncClient
 
                     client = AsyncClient(host=s.ollama_base_url, timeout=s.model_timeout_seconds)
                     response = await client.chat(
-                        model=s.model_name,
+                        model=model,
                         messages=[{"role": "user", "content": prompt}],
                         format=schema.model_json_schema(),
                         think=False,
@@ -37,7 +69,7 @@ class ModelGateway:
                         },
                     )
                     text = response.message.content
-                else:
+                elif provider == "google" and self.choice.provider == "default":
                     from google import genai
                     from google.genai import types
 
@@ -48,7 +80,7 @@ class ModelGateway:
                         http_options=types.HttpOptions(timeout=s.model_timeout_seconds * 1000),
                     ).aio as client:
                         response = await client.models.generate_content(
-                            model=s.model_name,
+                            model=model,
                             contents=prompt,
                             config=types.GenerateContentConfig(
                                 temperature=0,
@@ -58,11 +90,77 @@ class ModelGateway:
                             ),
                         )
                         text = response.text
-                return schema.model_validate_json(text), s.model_provider
-        except Exception as exc:
+                else:
+                    key = self.choice.api_key or (
+                        s.google_api_key.get_secret_value() if provider == "google" else ""
+                    )
+                    if not key:
+                        return None, "missing_key"
+                    if provider == "google":
+                        from urllib.parse import quote
+
+                        data = await asyncio.to_thread(
+                            self._remote_json,
+                            f"https://generativelanguage.googleapis.com/v1beta/models/{quote(model, safe='')}:generateContent",
+                            {"x-goog-api-key": key},
+                            {
+                                "contents": [{"parts": [{"text": prompt}]}],
+                                "generationConfig": {
+                                    "responseMimeType": "application/json",
+                                    "maxOutputTokens": s.model_max_output_tokens,
+                                },
+                            },
+                            s.model_timeout_seconds,
+                        )
+                        text = data["candidates"][0]["content"]["parts"][0]["text"]
+                    elif provider == "anthropic":
+                        data = await asyncio.to_thread(
+                            self._remote_json,
+                            "https://api.anthropic.com/v1/messages",
+                            {"x-api-key": key, "anthropic-version": "2023-06-01"},
+                            {
+                                "model": model,
+                                "max_tokens": s.model_max_output_tokens,
+                                "messages": [{"role": "user", "content": prompt}],
+                            },
+                            s.model_timeout_seconds,
+                        )
+                        text = next(
+                            block["text"] for block in data["content"] if block["type"] == "text"
+                        )
+                    elif provider == "openai":
+                        data = await asyncio.to_thread(
+                            self._remote_json,
+                            "https://api.openai.com/v1/responses",
+                            {"Authorization": f"Bearer {key}"},
+                            {
+                                "model": model,
+                                "input": prompt,
+                                "max_output_tokens": s.model_max_output_tokens,
+                            },
+                            s.model_timeout_seconds,
+                        )
+                        text = "".join(
+                            piece["text"]
+                            for item in data.get("output", [])
+                            for piece in item.get("content", [])
+                            if piece.get("type") == "output_text"
+                        )
+                    else:
+                        return None, "unsupported_provider"
+                if text and text.strip().startswith("```"):
+                    text = (
+                        text.strip()
+                        .removeprefix("```json")
+                        .removeprefix("```")
+                        .removesuffix("```")
+                        .strip()
+                    )
+                return schema.model_validate_json(text), provider
+        except Exception as exc:  # noqa: BLE001 - provider SDK errors must fall back safely
             # Never return exception strings: SDK messages may contain request information.
             logging.getLogger("opsgraph.model").warning(
-                "model_fallback provider=%s type=%s", s.model_provider, type(exc).__name__
+                "model_fallback provider=%s type=%s", provider, type(exc).__name__
             )
             self.failure = "timeout" if isinstance(exc, TimeoutError) else "unavailable_or_invalid"
             return None, self.failure

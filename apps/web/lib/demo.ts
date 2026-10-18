@@ -83,41 +83,8 @@ export const services = [
     latency: 21,
   },
 ];
-export const edges = [
-  [0, 1],
-  [0, 2],
-  [2, 3],
-  [3, 4],
-  [3, 5],
-  [3, 6],
-  [2, 7],
-];
-export const affected = [
-  "bank-connector",
-  "payment-service",
-  "order-service",
-  "api-gateway",
-];
 export const scenarioLabels: Record<Scenario, string> = {
   healthy: "Pago exitoso",
   timeout: "Timeout del banco",
   deployment: "Cambio reciente + timeout",
 };
-export interface EventTransport {
-  send(event: DemoEvent): void;
-  subscribe(listener: (event: DemoEvent) => void): () => void;
-}
-/** Browser-only transport. Replace at the integration boundary once backend contracts are approved. */
-export class LocalEventTransport implements EventTransport {
-  private listeners = new Set<(event: DemoEvent) => void>();
-  send(event: DemoEvent) {
-    this.listeners.forEach((listener) => listener(event));
-  }
-  subscribe(listener: (event: DemoEvent) => void) {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
-  }
-}
-export const transport = new LocalEventTransport();
