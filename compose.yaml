@@ -6,7 +6,7 @@ services:
       REDIS_PASSWORD: ${FALKORDB_PASSWORD:?Run scripts/setup.ps1 first}
       REDISCLI_AUTH: ${FALKORDB_PASSWORD}
     entrypoint: ["sh", "-c"]
-    command: ["exec redis-server --loadmodule /var/lib/falkordb/bin/falkordb.so --requirepass \"$$REDIS_PASSWORD\" --appendonly yes --dir /data"]
+    command: ["exec redis-server --loadmodule /var/lib/falkordb/bin/falkordb.so --requirepass \"$$REDIS_PASSWORD\" --appendonly no --save 60 1 --dir /data"]
     ports: ["127.0.0.1:6380:6379"]
     volumes: ["graph-data:/data"]
     healthcheck:

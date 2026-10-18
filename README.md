@@ -78,7 +78,7 @@ docker compose stop
 docker compose start
 ```
 
-FalkorDB publica solo `localhost:6380`, exige contraseña y persiste en un volumen con AOF. Evita eliminar volúmenes si quieres conservar el historial.
+FalkorDB publica solo `localhost:6380`, exige contraseña y guarda instantáneas RDB en un volumen. El contenedor guarda los cambios tras 60 segundos con al menos una escritura y al cerrarse limpiamente; un cierre brusco puede perder los cambios posteriores a la última instantánea. Evita eliminar volúmenes si quieres conservar el historial.
 
 ## Límites
 

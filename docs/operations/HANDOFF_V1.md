@@ -29,7 +29,7 @@ En el equipo original se usó `WEB_PORT=3100` porque 3000 estaba ocupado. Ese aj
 
 - Docker Desktop Linux iniciado y FalkorDB 4.12.0 descargado.
 - Base autenticada: sin credenciales devuelve NOAUTH; con las configuradas responde PONG.
-- AOF y volumen nombrado configurados; semilla idempotente de ocho servicios.
+- Instantáneas RDB y volumen nombrado configurados; semilla idempotente de ocho servicios. El AOF de la imagen v4.12.0 falló al reproducir `GRAPH.EFFECT` en este equipo; se conserva un respaldo local en `.local/falkordb-before-recovery.tar.gz`.
 - Integración real con DB y MCP: topología, pago exitoso, timeout, despliegue correlacionado, idempotencia, separación de sesiones y recuperación sin aprobar el pago fallido.
 - Build Next.js con comprobación TypeScript y endpoint proxy servidor.
 - Pruebas de contrato del adaptador Ollama con respuestas controladas y corte tras fallo.

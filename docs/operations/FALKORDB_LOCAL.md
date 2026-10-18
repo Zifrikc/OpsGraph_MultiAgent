@@ -98,7 +98,9 @@ docker compose down                 # Elimina contenedores; conserva volumen
 docker compose up -d                 # Reconecta el volumen
 ```
 
-El volumen `opsgraph_graph-data` y AOF conservan el grafo. No uses `docker compose down -v` salvo que quieras borrar deliberadamente la base de esta demo. No cambies la contraseña del `.env` mientras los contenedores siguen usando el valor anterior: recrea DB/API/web de forma coordinada.
+El volumen `opsgraph_graph-data` conserva instantáneas RDB del grafo. Redis guarda tras 60 segundos con al menos una escritura y durante un cierre limpio; un cierre brusco puede perder los cambios desde la última instantánea. No uses `docker compose down -v` salvo que quieras borrar deliberadamente la base de esta demo. No cambies la contraseña del `.env` mientras los contenedores siguen usando el valor anterior: recrea DB/API/web de forma coordinada.
+
+En este equipo, FalkorDB v4.12.0 terminó con código 139 al reproducir `GRAPH.EFFECT` desde AOF después de reiniciar. El volumen original se respaldó en `.local/falkordb-before-recovery.tar.gz` y los directorios AOF fallidos se conservaron dentro del volumen como `appendonlydir.quarantine-*`. La configuración local usa RDB para evitar ese fallo de reinicio. Para una instalación externa o producción, el equipo debe definir una estrategia de respaldo y recuperación propia.
 
 ## Si algo falla
 
